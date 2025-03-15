@@ -1,0 +1,19 @@
+# Ignore virtual environments
+.venv/
+test_env/
+
+# Ignore compiled files
+__pycache__/
+*.pyc
+
+# Ignore package builds
+dist/
+build/
+*.egg-info/
+
+# Ignore IDE/editor files
+.vscode/
+.idea/
+
+# Ignore environment file
+.env
