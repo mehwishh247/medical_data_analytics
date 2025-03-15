@@ -31,7 +31,7 @@ source .venv/bin/activate  # On macOS/Linux
 
 Install the required Python packages:
 
->> pip install -r requirements.txt
+> pip install -r requirements.txt
 
 ## Step 4: Configure Environment Variables
 
@@ -52,7 +52,7 @@ DB_NAME=medical_data
 
 To parse XML files and insert data into the database, run:
 
->> python3 scripts/parse_xml.py
+> python3 scripts/parse_xml.py
 
 ## Step 8: Verify Data in MySQL
 
