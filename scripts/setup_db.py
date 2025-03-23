@@ -60,14 +60,11 @@ def create_tables(conn):
                 race VARCHAR(50),
                 ethnicity VARCHAR(50),
                 marital_status VARCHAR(50),
-                street VARCHAR(255),
-                city VARCHAR(100),
-                state VARCHAR(50),
-                postal_code VARCHAR(20),
+                address VARCHAR(255),
                 home_phone VARCHAR(20),
                 mobile_phone VARCHAR(20),
                 email VARCHAR(100),
-                language VARCHAR(50)
+                language VARCHAR(100)
             );
         """,
         "patient_hospitalizations": """
