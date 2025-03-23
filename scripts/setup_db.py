@@ -85,7 +85,7 @@ def create_tables(conn):
                 diagnosis_date DATETIME,
                 icd10_code VARCHAR(20),
                 diagnosis_description TEXT,
-                severity VARCHAR(50),
+                severity VARCHAR(255),
                 FOREIGN KEY (patient_id) REFERENCES patient_demographics(patient_id) ON DELETE CASCADE
             );
         """,
