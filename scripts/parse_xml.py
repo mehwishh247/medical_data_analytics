@@ -31,69 +31,77 @@ def map_gender_code(gender_code):
 
 def parse_patient_data(root):
     """Parses patient demographic details from XML."""
+    ns = {"ns0": "urn:hl7-org:v3", "ns2": "urn:hl7-org:sdtc"}
+    patient_role = root.find(".//{urn:hl7-org:v3}patientRole")
+    if not patient_role:
+        return {}
     
-     # Extract patient ID (first valid one found)
-    patient_id = None
-    for id_element in root.findall(".//{urn:hl7-org:v3}id"):
-        if "extension" in id_element.attrib:
-            patient_id = id_element.attrib["extension"]
-            break
-
-    first_name = extract_text(root.find(".//{urn:hl7-org:v3}given"))
-    last_name = extract_text(root.find(".//{urn:hl7-org:v3}family"))
+    patient_id_elem = root.find(".//ns0:id", ns)
+    patient_id = patient_id_elem.get("extension") if patient_id_elem is not None else "N/A"
     
-    dob_raw = extract_text(root.find(".//{urn:hl7-org:v3}birthTime"))
-    DOB = None
-    if dob_raw:
-        try:
-            DOB = datetime.strptime(dob_raw[:8], "%Y%m%d").strftime("%Y-%m-%d")  # Extract YYYYMMDD and convert
-        except ValueError:
-            DOB = None  # Set to NULL if format is invalid
-
-    gender_code = root.find(".//{urn:hl7-org:v3}translation").attrib.get("code") if root.find(".//{urn:hl7-org:v3}translation") is not None else None
-    gender = map_gender_code(gender_code)
-
-    # Extract address details
-    addr = root.find(".//{urn:hl7-org:v3}addr")
-    street = extract_text(addr.find("{urn:hl7-org:v3}streetAddressLine")) if addr is not None else None
-    city = extract_text(addr.find("{urn:hl7-org:v3}city")) if addr is not None else None
-    state = extract_text(addr.find("{urn:hl7-org:v3}state")) if addr is not None else None
-    postal_code = extract_text(addr.find("{urn:hl7-org:v3}postalCode")) if addr is not None else None
-
-    # Extract contact details
-    contact = {"home_phone": None, "mobile_phone": None, "email": None}
-    for telecom in root.findall(".//{urn:hl7-org:v3}telecom"):
-        value = telecom.attrib.get("value", "").replace("tel:", "").replace("mailto:", "").strip()
-        if "@" in value:
-            contact["email"] = value
-        elif value.startswith("+") or value.isdigit():
-            if "home" in telecom.attrib.get("use", "").lower():
-                contact["home_phone"] = value
-            else:
-                contact["mobile_phone"] = value
-
-    # Extract race and ethnicity
-    race = root.find(".//{urn:hl7-org:v3}raceCode")
-    ethnicity = root.find(".//{urn:hl7-org:v3}ethnicGroupCode")
-    race = race.attrib.get("displayName", "Unknown") if race is not None else "Unknown"
-    ethnicity = ethnicity.attrib.get("displayName", "Unknown") if ethnicity is not None else "Unknown"
+    patient_role = root.find(".//ns0:recordTarget/ns0:patientRole", ns)
+    patient = patient_role.find("ns0:patient", ns) if patient_role is not None else None
+    
+    given_names = patient.findall("ns0:name/ns0:given", ns) if patient is not None else []
+    family_name = patient.findtext("ns0:name/ns0:family", "", ns) if patient is not None else ""
+    first_name = " ".join([name.text for name in given_names if name.text]).strip()
+    last_name = family_name.strip()
+    
+    dob_elem = patient.find("ns0:birthTime", ns) if patient is not None else None
+    dob = dob_elem.get("value") if dob_elem is not None else "N/A"
+    
+    gender_elem = root.find(".//ns0:patient/ns0:administrativeGenderCode/ns0:translation", ns)
+    gender = gender_elem.get("displayName") if gender_elem is not None else "N/A"
+    
+    race_elem = root.find(".//ns0:patient/ns0:raceCode/ns0:translation", ns)
+    race = race_elem.get("displayName") if race_elem is not None else "N/A"
+    
+    ethnicity_elem = root.find(".//ns0:patient/ns0:ethnicGroupCode/ns0:translation", ns)
+    ethnicity = ethnicity_elem.get("displayName") if ethnicity_elem is not None else "N/A"
+    
+    marital_status_elem = root.find(".//ns0:patient/ns0:maritalStatusCode/ns0:translation", ns)
+    marital_status = marital_status_elem.get("displayName") if marital_status_elem is not None else "N/A"
+    
+    address_elem = patient_role.find("ns0:addr", ns) if patient_role is not None else None
+    address_parts = [
+        address_elem.findtext("ns0:streetAddressLine", "", ns),
+        address_elem.findtext("ns0:city", "", ns),
+        address_elem.findtext("ns0:state", "", ns),
+        address_elem.findtext("ns0:postalCode", "", ns)
+    ] if address_elem is not None else []
+    address = ", ".join(filter(None, address_parts)) if address_parts else "N/A"
+    
+    home_phone, mobile_phone, email = "None", "None", "None"
+    for telecom in root.findall(".//ns0:patientRole/ns0:telecom", ns):
+        telecom_value = telecom.get("value", "").replace("tel:", "").replace("mailto:", "").strip()
+        telecom_use = telecom.get("use", "").strip().lower()
+        if "hp" in telecom_use:  # Home phone
+            home_phone = telecom_value if telecom_value.lower() not in ["none", "null"] else "None"
+        elif "mc" in telecom_use:  # Mobile phone
+            mobile_phone = telecom_value if telecom_value.lower() not in ["none", "null"] else "None"
+        elif "h" in telecom_use and "mailto" in telecom_value:  # Email
+            email = telecom_value if telecom_value.lower() not in ["none", "null"] else "None"
+    
+    # Languages (Unique list)
+    language = [lang.get("code", "N/A") for lang in root.findall(".//ns0:patient/ns0:languageCommunication/ns0:languageCode", ns)]
+    language = ", ".join(language) if language else "N/A"
 
     return {
         "patient_id": patient_id,
         "first_name": first_name,
-        "last_name": last_name,
-        "DOB": DOB,
-        "gender": gender,
-        "street": street,
-        "city": city,
-        "state": state,
-        "postal_code": postal_code,
-        "home_phone": contact["home_phone"],
-        "mobile_phone": contact["mobile_phone"],
-        "email": contact["email"],
-        "race": race,
-        "ethnicity": ethnicity
+        "Last Name": last_name,
+        "DOB": dob,
+        "Gender": gender,
+        "Race": race,
+        "Ethnicity": ethnicity,
+        "Marital Status": marital_status,
+        "Address": address,
+        "Home Phone": home_phone,
+        "Mobile Phone": mobile_phone,
+        "Email": email,
+        "Language": language
     }
+
 
 def parse_hospitalizations(root):
     """Parses patient hospitalization details from XML."""
@@ -116,6 +124,8 @@ def parse_hospitalizations(root):
 def parse_diagnoses(root):
     """Parses patient diagnoses details from XML."""
     diagnoses = []
+
+    diagnoses_list = root.find('''.//*[@code="11450-4"]''')
     for entry in root.findall(".//{urn:hl7-org:v3}observation"):
         diagnosis_date_raw = extract_text(entry.find(".//{urn:hl7-org:v3}effectiveTime"))
         
@@ -153,22 +163,22 @@ def insert_patient_data(patient_data):
     cursor = conn.cursor()
 
     sql = """
-        INSERT INTO patient_demographics (patient_id, first_name, last_name, DOB, gender, street, city, state, postal_code, home_phone, mobile_phone, email, race, ethnicity)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO patient_demographics (patient_id, first_name, last_name, DOB, gender, race, ethnicity, marital_status, address, home_phone, mobile_phone, email, language)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE 
+            patient_id=VALUES(patient_id),
             first_name=VALUES(first_name), 
             last_name=VALUES(last_name), 
             DOB=VALUES(DOB), 
             gender=VALUES(gender),
-            street=VALUES(street),
-            city=VALUES(city),
-            state=VALUES(state),
-            postal_code=VALUES(postal_code),
+            race=VALUES(race),
+            ethnicity=VALUES(ethnicity),
+            marital_status=VALUES(marital_status),
+            address=VALUES(Address),
             home_phone=VALUES(home_phone),
             mobile_phone=VALUES(mobile_phone),
             email=VALUES(email),
-            race=VALUES(race),
-            ethnicity=VALUES(ethnicity);
+            language=VALUES(language);
     """
     values = tuple(patient_data.values())
     cursor.execute(sql, values)
