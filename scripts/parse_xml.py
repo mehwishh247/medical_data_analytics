@@ -1,8 +1,10 @@
 import os
 import mysql.connector
 import xml.etree.ElementTree as ET
+from lxml import etree
+import re
 from dotenv import load_dotenv
-import datetime
+from datetime import datetime
 
 # Load database credentials
 load_dotenv()
@@ -123,25 +125,61 @@ def parse_hospitalizations(root):
 
 def parse_diagnoses(root):
     """Parses patient diagnoses details from XML."""
+    ns = {'ns0': 'urn:hl7-org:v3'}
     diagnoses = []
-
-    diagnoses_list = root.find('''.//*[@code="11450-4"]''')
-    for entry in root.findall(".//{urn:hl7-org:v3}observation"):
-        diagnosis_date_raw = extract_text(entry.find(".//{urn:hl7-org:v3}effectiveTime"))
+    
+    # Find problem section using template ID
+    problem_section = root.xpath(
+        ".//ns0:section[ns0:templateId[@root='2.16.840.1.113883.10.20.22.2.5.1']]", 
+        namespaces=ns
+    )
+    
+    if not problem_section:
+        return diagnoses
+    
+    # Find table body
+    tbody = problem_section[0].xpath(".//ns0:tbody", namespaces=ns)
+    if not tbody:
+        return diagnoses
+    
+    # Process each table row
+    for tr in tbody[0].xpath(".//ns0:tr", namespaces=ns):
+        problem_id = tr.get("ID")
+        if not problem_id or not re.match(r'problem-\d+', problem_id):
+            continue
+            
+        # Extract problem name
+        problem_name = None
+        for td in tr.xpath(".//ns0:td", namespaces=ns):
+            content = td.xpath(f".//ns0:content[@ID='{problem_id}-problem']", namespaces=ns)
+            if content:
+                problem_name = content[0].text.strip()
+                break
         
-        # Convert to MySQL DATETIME format or set to None
-        diagnosis_date = None
-        if diagnosis_date_raw:
-            try:
-                diagnosis_date = datetime.strptime(diagnosis_date_raw, "%Y%m%d%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                diagnosis_date = None  # Set to None if parsing fails
-        
-        icd10_code = extract_text(entry.find(".//{urn:hl7-org:v3}code"))
-        diagnosis_description = extract_text(entry.find(".//{urn:hl7-org:v3}text"))
-        severity = extract_text(entry.find(".//{urn:hl7-org:v3}interpretationCode"))
+        # Extract date
+        date = None
+        for td in tr.xpath(".//ns0:td", namespaces=ns):
+            content = td.xpath(".//ns0:content", namespaces=ns)
+            if content and content[0].text and re.match(r'\d{1,2}/\d{1,2}/\d{4}', content[0].text):
+                date_str = content[0].text.strip()
+                try:
+                    # Convert to 24-hour format
+                    dt = datetime.strptime(date_str, "%m/%d/%Y %I:%M:%S %p")
+                    date = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    date = date_str  # Fallback to original format
+                break
 
-        diagnoses.append((diagnosis_date, icd10_code, diagnosis_description, severity))
+        entry = root.xpath(f".//ns0:entry[.//ns0:text/ns0:reference[@value='#{problem_id}']]", namespaces=ns)[0]
+        translation = entry.find(".//ns0:translation[@codeSystemName='ICD-10']", namespaces=ns)
+    
+        if problem_name and date:
+            diagnoses.append({
+                "diagnosis_description": problem_name,
+                "diagnosis_date": date,
+                "icd10_code": translation.attrib['code'] if translation else None,
+                "severity": translation.attrib['displayName'] if translation else ''
+            })
     
     return diagnoses
 
@@ -210,6 +248,9 @@ def insert_diagnoses(diagnoses, patient_id):
     """Inserts diagnoses data into MySQL."""
     conn = connect_to_db()
     cursor = conn.cursor()
+
+    print(f'Adding diagnoses for patient with id: {patient_id}')
+
     sql = """
         INSERT INTO patient_diagnoses (patient_id, diagnosis_date, icd10_code, diagnosis_description, severity)
         VALUES (%s, %s, %s, %s, %s)
@@ -217,11 +258,27 @@ def insert_diagnoses(diagnoses, patient_id):
             diagnosis_description=VALUES(diagnosis_description), 
             severity=VALUES(severity);
     """
-    for record in diagnoses:
-        cursor.execute(sql, (patient_id, *record))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        for record in diagnoses:
+            # Unpack record values and add patient_id as first parameter
+            cursor.execute(sql, (
+                patient_id,
+                record['diagnosis_date'],
+                record['icd10_code'],
+                record['diagnosis_description'],
+                record['severity']
+            ))
+            print('Added data row.')
+            
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+        raise RuntimeError(f"Database insertion failed: {str(e)}")
+    
+    finally:
+        cursor.close()
+        conn.close()
 
 def insert_medications(medications, patient_id):
     """Inserts medication data into MySQL."""
@@ -250,21 +307,21 @@ def process_xml_files():
             xml_path = os.path.join(xml_folder, filename)
             print(f"Processing file: {filename}\n")
 
-            tree = ET.parse(xml_path)
+            tree = etree.parse(xml_path)
             root = tree.getroot()
 
             patient_data = parse_patient_data(root)
-            hospitalizations = parse_hospitalizations(root)
+            # hospitalizations = parse_hospitalizations(root)
             diagnoses = parse_diagnoses(root)
-            medications = parse_medications(root)
+            # medications = parse_medications(root)
 
             if patient_data:
                 insert_patient_data(patient_data)
-                insert_hospitalizations(hospitalizations, patient_data["patient_id"])
+            #     insert_hospitalizations(hospitalizations, patient_data["patient_id"])
                 insert_diagnoses(diagnoses, patient_data["patient_id"])
-                insert_medications(medications, patient_data["patient_id"])
+            #     insert_medications(medications, patient_data["patient_id"])
 
-                os.rename(xml_path, f"data/processed/{filename}")
+            #     os.rename(xml_path, f"data/processed/{filename}")
 
 if __name__ == "__main__":
     process_xml_files()
