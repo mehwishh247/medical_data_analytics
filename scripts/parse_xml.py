@@ -1,10 +1,9 @@
 import os
 import mysql.connector
-import xml.etree.ElementTree as ET
 from lxml import etree
 import re
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Load database credentials
 load_dotenv()
@@ -183,22 +182,72 @@ def parse_diagnoses(root):
     
     return diagnoses
 
+def parse_ccda_date(ccda_date):
+    """Convert CCDA date string to MySQL datetime format"""
+    if not ccda_date:
+        return None
+    
+    try:
+        if len(ccda_date) >= 8:
+            dt = datetime.strptime(ccda_date[:14], "%Y%m%d%H%M%S")
+            if len(ccda_date) > 14:
+                offset = ccda_date[14:]
+                hours = int(offset[:3])
+                minutes = int(offset[3:])
+                dt = dt - timedelta(hours=hours, minutes=minutes)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        return None
+    except ValueError:
+        return None
+
 def parse_medications(root):
     """Parses patient medications details from XML."""
+    ns = {'ns0': 'urn:hl7-org:v3'}
     medications = []
-    for med in root.findall(".//{urn:hl7-org:v3}substanceAdministration"): 
-        medication_name = extract_text(med.find(".//{urn:hl7-org:v3}manufacturedProduct/{urn:hl7-org:v3}name"))
-        dosage = extract_text(med.find(".//{urn:hl7-org:v3}doseQuantity"))
-        frequency = extract_text(med.find(".//{urn:hl7-org:v3}rateQuantity"))
-        start_date = extract_text(med.find(".//{urn:hl7-org:v3}effectiveTime/{urn:hl7-org:v3}low"))
-        end_date = extract_text(med.find(".//{urn:hl7-org:v3}effectiveTime/{urn:hl7-org:v3}high"))
-        medications.append((medication_name, dosage, frequency, start_date, end_date))
+
+    # Locate the Medications section (LOINC code 10160-0)
+    section = root.xpath(".//ns0:section[ns0:code[@code='10160-0']]", namespaces=ns)
+    if not section:
+        return medications  # No medications section found
+
+    for entry in section[0].xpath(".//ns0:entry", namespaces=ns):
+        substance_adm = entry.find(".//ns0:substanceAdministration", namespaces=ns)
+        if substance_adm is not None:
+            medication = {}
+
+            # Extract Medication Name
+            name_elem = substance_adm.find(".//ns0:manufacturedMaterial/ns0:code", namespaces=ns)
+            medication["medication_name"] = name_elem.get("displayName") if name_elem is not None else "Unknown"
+
+            # Extract Dosage
+            dose_elem = substance_adm.find(".//ns0:doseQuantity", namespaces=ns)
+            medication["dosage"] = f"{dose_elem.get('value')} {dose_elem.get('unit')}" if dose_elem is not None else "Unknown"
+
+            # Extract Frequency
+            freq_elem = substance_adm.find(".//ns0:rateQuantity", namespaces=ns)
+            medication["frequency"] = f"{freq_elem.get('value')} {freq_elem.get('unit')}" if freq_elem is not None else "Unknown"
+
+            # Extract Duration (Start & End Date)
+            start_elem = substance_adm.find(".//ns0:effectiveTime/ns0:low", namespaces=ns)
+            end_elem = substance_adm.find(".//ns0:effectiveTime/ns0:high", namespaces=ns)
+            medication["start_date"] = parse_ccda_date(start_elem.get("value")) if start_elem is not None else None
+            medication["end_date"] = parse_ccda_date(end_elem.get("value")) if end_elem is not None else None
+
+            # Extract Instructions from <entryRelationship typeCode="SUBJ" inversionInd="true">
+            instruction_elem = entry.find(".//ns0:entryRelationship/ns0:act/ns0:text", namespaces=ns)
+            medication["instructions"] = instruction_elem.text.capitalize() if instruction_elem is not None else "No specific instructions"
+
+            medications.append(medication)
+
     return medications
+
 
 def insert_patient_data(patient_data):
     """Inserts validated patient data into MySQL."""
     conn = connect_to_db()
     cursor = conn.cursor()
+
+    print(f"Adding patient's demographics data for id: {patient_data['patient_id']}...")
 
     sql = """
         INSERT INTO patient_demographics (patient_id, first_name, last_name, DOB, gender, race, ethnicity, marital_status, address, home_phone, mobile_phone, email, language)
@@ -227,6 +276,9 @@ def insert_patient_data(patient_data):
 
 def insert_hospitalizations(hospitalizations, patient_id):
     """Inserts hospitalization data into MySQL."""
+
+    print(f"Adding hospitalization records for patient with id: {patient_id}")
+
     conn = connect_to_db()
     cursor = conn.cursor()
     sql = """
@@ -249,7 +301,7 @@ def insert_diagnoses(diagnoses, patient_id):
     conn = connect_to_db()
     cursor = conn.cursor()
 
-    print(f'Adding diagnoses for patient with id: {patient_id}')
+    print(f"Adding diagnoses for patient with id: {patient_id}")
 
     sql = """
         INSERT INTO patient_diagnoses (patient_id, diagnosis_date, icd10_code, diagnosis_description, severity)
@@ -268,8 +320,7 @@ def insert_diagnoses(diagnoses, patient_id):
                 record['diagnosis_description'],
                 record['severity']
             ))
-            print('Added data row.')
-            
+
         conn.commit()
 
     except Exception as e:
@@ -282,22 +333,51 @@ def insert_diagnoses(diagnoses, patient_id):
 
 def insert_medications(medications, patient_id):
     """Inserts medication data into MySQL."""
+
+    print(f"Adding medications' record for patient with id: {patient_id}")
+
     conn = connect_to_db()
     cursor = conn.cursor()
     sql = """
-        INSERT INTO patient_medications (patient_id, medication_name, dosage, frequency, start_date, end_date)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO patient_medications (
+            medication_id, 
+            patient_id, 
+            medication_name, 
+            dosage, 
+            frequency, 
+            start_date, 
+            end_date, 
+            instructions
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE 
+            medication_name=VALUES(medication_name),
             dosage=VALUES(dosage), 
             frequency=VALUES(frequency), 
             start_date=VALUES(start_date), 
-            end_date=VALUES(end_date);
-    """
-    for record in medications:
-        cursor.execute(sql, (patient_id, *record))
-    conn.commit()
-    cursor.close()
-    conn.close()
+            end_date=VALUES(end_date),
+            instructions=VALUES(instructions);"""
+    try:
+        for record in medications:
+            cursor.execute(sql, (
+                None,  # Auto-incrementing medication_id
+                patient_id,
+                record['medication_name'],
+                record['dosage'],
+                record['frequency'],
+                record['start_date'],
+                record['end_date'],
+                record['instructions']
+            ))
+        conn.commit()
+    
+    except Exception as e:
+        conn.rollback()
+        raise RuntimeError(f"Database insertion failed: {str(e)}")
+    
+    finally:
+        cursor.close()
+        conn.close()
 
 def process_xml_files():
     """Processes all XML files in the 'incoming' folder."""
@@ -313,13 +393,15 @@ def process_xml_files():
             patient_data = parse_patient_data(root)
             # hospitalizations = parse_hospitalizations(root)
             diagnoses = parse_diagnoses(root)
-            # medications = parse_medications(root)
+            medications = parse_medications(root)
 
             if patient_data:
+                print('Updating the database...')
+
                 insert_patient_data(patient_data)
             #     insert_hospitalizations(hospitalizations, patient_data["patient_id"])
                 insert_diagnoses(diagnoses, patient_data["patient_id"])
-            #     insert_medications(medications, patient_data["patient_id"])
+                insert_medications(medications, patient_data["patient_id"])
 
             #     os.rename(xml_path, f"data/processed/{filename}")
 
