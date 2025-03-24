@@ -34,7 +34,7 @@ def parse_patient_data(root):
     """Parses patient demographic details from XML."""
     ns = {"ns0": "urn:hl7-org:v3", "ns2": "urn:hl7-org:sdtc"}
     patient_role = root.find(".//{urn:hl7-org:v3}patientRole")
-    if not patient_role:
+    if patient_role is None:
         return {}
     
     patient_id_elem = root.find(".//ns0:id", ns)
@@ -49,7 +49,14 @@ def parse_patient_data(root):
     last_name = family_name.strip()
     
     dob_elem = patient.find("ns0:birthTime", ns) if patient is not None else None
-    dob = dob_elem.get("value") if dob_elem is not None else "N/A"
+    dob = dob_elem.get("value") if dob_elem is not None else None
+    
+    if dob:
+        try:
+            dob_datetime = datetime.strptime(dob, "%Y%m%d")
+            dob = dob_datetime.strftime("%Y-%m-%d")
+        except ValueError:
+            dob = None
     
     gender_elem = root.find(".//ns0:patient/ns0:administrativeGenderCode/ns0:translation", ns)
     gender = gender_elem.get("displayName") if gender_elem is not None else "N/A"
@@ -103,23 +110,86 @@ def parse_patient_data(root):
         "Language": language
     }
 
+def parse_hospitalization_date(date_str):
+    """Convert CCDA date string to Python datetime object"""
+    if not date_str:
+        return None
+    
+    try:
+        if len(date_str) >= 8:
+            dt = datetime.strptime(date_str[:14], "%Y%m%d%H%M%S")
+            if len(date_str) > 14:
+                offset = date_str[14:]
+                hours = int(offset[:3])
+                minutes = int(offset[3:])
+                dt = dt - timedelta(hours=hours, minutes=minutes)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        return None
+    except ValueError:
+        return None
 
 def parse_hospitalizations(root):
-    """Parses patient hospitalization details from XML."""
+    """Extracts hospitalization records from CCDA XML."""
+    ns = {'ns0': 'urn:hl7-org:v3'}
     hospitalizations = []
-    for encounter in root.findall(".//{urn:hl7-org:v3}encounter"): 
-        hospitalization_id_elem = encounter.find(".//{urn:hl7-org:v3}id")
-        hospitalization_id = hospitalization_id_elem.attrib.get("extension") if hospitalization_id_elem is not None else None
+
+    # Find Encounters section
+    section = root.xpath(
+        ".//ns0:section[ns0:code[@code='46240-8']]",
+        namespaces=ns
+    )
+
+    if not section:
+        return hospitalizations
+
+    # Process each entry in the section
+    for entry in section[0].xpath(".//ns0:entry/ns0:encounter", namespaces=ns):
+        hospitalization = {
+            "encounter_type": "Unknown",
+            "location": "Unknown",
+            "admission_date": None,
+            "discharge_date": None,
+            "diagnoses": [],
+            "providers": [],
+            "informants": []
+        }
+
+        # Extract encounter type
+        code = entry.xpath(".//ns0:code/@displayName", namespaces=ns)
+        if code:
+            hospitalization["encounter_type"] = code[0].strip()
+
+        # Extract effective time (admission/discharge dates)
+        effective_time = entry.xpath(".//ns0:effectiveTime", namespaces=ns)
+        if effective_time:
+            low = effective_time[0].xpath(".//ns0:low/@value", namespaces=ns)
+            high = effective_time[0].xpath(".//ns0:high/@value", namespaces=ns)
+            if low:
+                hospitalization["admission_date"] = parse_hospitalization_date(low[0])
+            if high:
+                hospitalization["discharge_date"] = parse_hospitalization_date(high[0])
+
+        # Extract diagnoses
+        for ref in entry.xpath(".//ns0:entryRelationship/ns0:act/ns0:entryRelationship/ns0:observation/ns0:value/@displayName", namespaces=ns):
+            hospitalization["diagnoses"].append(ref)
         
-        if hospitalization_id is None:
-            continue  # Skip records with missing hospitalization_id
+        # Extract Location
+        location = entry.xpath(".//ns0:participant/ns0:participantRole/ns0:playingEntity/ns0:name", namespaces=ns)
+        if location:
+          hospitalization["location"] = location[0].text.strip()
 
-        admission_date = extract_text(encounter.find(".//{urn:hl7-org:v3}effectiveTime/{urn:hl7-org:v3}low"))
-        discharge_date = extract_text(encounter.find(".//{urn:hl7-org:v3}effectiveTime/{urn:hl7-org:v3}high"))
-        hospital_name = extract_text(encounter.find(".//{urn:hl7-org:v3}name"))
-        service_details = extract_text(encounter.find(".//{urn:hl7-org:v3}code"))
+        # Extract providers
+        providers = entry.xpath(".//ns0:performer/ns0:assignedEntity/ns0:representedOrganization/ns0:name", namespaces=ns)
+        for provider in providers:
+            hospitalization["providers"].append(provider.text.strip())
+            
+        #Extract Informants
+        informants = entry.xpath(".//ns0:informant/ns0:assignedEntity/ns0:representedOrganization/ns0:name", namespaces=ns)
+        for informant in informants:
+            hospitalization["informants"].append(informant.text.strip())
+            
+        hospitalizations.append(hospitalization)
 
-        hospitalizations.append((hospitalization_id, admission_date, discharge_date, hospital_name, service_details))
     return hospitalizations
 
 def parse_diagnoses(root):
@@ -176,8 +246,8 @@ def parse_diagnoses(root):
             diagnoses.append({
                 "diagnosis_description": problem_name,
                 "diagnosis_date": date,
-                "icd10_code": translation.attrib['code'] if translation else None,
-                "severity": translation.attrib['displayName'] if translation else ''
+                "icd10_code": translation.attrib['code'] if translation is not None else None,
+                "severity": translation.attrib['displayName'] if translation is not None else ''
             })
     
     return diagnoses
@@ -282,19 +352,36 @@ def insert_hospitalizations(hospitalizations, patient_id):
     conn = connect_to_db()
     cursor = conn.cursor()
     sql = """
-        INSERT INTO patient_hospitalizations (patient_id, hospitalization_id, admission_date, discharge_date, hospital_name, service_details)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE 
-            admission_date=VALUES(admission_date), 
-            discharge_date=VALUES(discharge_date), 
-            hospital_name=VALUES(hospital_name),
-            service_details=VALUES(service_details);
+        INSERT INTO patient_hospitalizations (
+            patient_id, 
+            admission_date, 
+            discharge_date, 
+            hospital_name, 
+            service_details
+        )
+        VALUES (%s, %s, %s, %s, %s)
     """
-    for record in hospitalizations:
-        cursor.execute(sql, (patient_id, *record))
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        for record in hospitalizations:
+            try:
+                cursor.execute(sql, (
+                    patient_id,
+                    record.get('admission_date'),
+                    record.get('discharge_date'),
+                    record.get('hospital_name'),
+                    record.get('service_details')
+                ))
+            except Exception as inner_e:
+                print(f"Error inserting record: {record}. Error: {inner_e}")
+                conn.rollback()  # Rollback if one record fails
+        conn.commit()  # Commit after all records are processed
+        print(f"Successfully added hospitalization records for patient with id: {patient_id}")
+    except Exception as outer_e:
+        print(f"Database insertion failed: {outer_e}")
+        conn.rollback()  # Rollback if outer loop fails
+    finally:
+        cursor.close()
+        conn.close()
 
 def insert_diagnoses(diagnoses, patient_id):
     """Inserts diagnoses data into MySQL."""
@@ -391,7 +478,7 @@ def process_xml_files():
             root = tree.getroot()
 
             patient_data = parse_patient_data(root)
-            # hospitalizations = parse_hospitalizations(root)
+            hospitalizations = parse_hospitalizations(root)
             diagnoses = parse_diagnoses(root)
             medications = parse_medications(root)
 
@@ -399,11 +486,11 @@ def process_xml_files():
                 print('Updating the database...')
 
                 insert_patient_data(patient_data)
-            #     insert_hospitalizations(hospitalizations, patient_data["patient_id"])
+                insert_hospitalizations(hospitalizations, patient_data["patient_id"])
                 insert_diagnoses(diagnoses, patient_data["patient_id"])
                 insert_medications(medications, patient_data["patient_id"])
 
-            #     os.rename(xml_path, f"data/processed/{filename}")
+                # os.rename(xml_path, f"data/processed/{filename}")
 
 if __name__ == "__main__":
     process_xml_files()
