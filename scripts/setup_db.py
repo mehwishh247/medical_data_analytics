@@ -55,7 +55,7 @@ def create_tables(conn):
                 patient_id VARCHAR(50) PRIMARY KEY,
                 first_name VARCHAR(100),
                 last_name VARCHAR(100),
-                DOB DATE,
+                DOB DATE NULL,
                 gender ENUM('Male', 'Female', 'Other', 'Unknown'),
                 race VARCHAR(50),
                 ethnicity VARCHAR(50),
@@ -69,7 +69,7 @@ def create_tables(conn):
         """,
         "patient_hospitalizations": """
             CREATE TABLE IF NOT EXISTS patient_hospitalizations (
-                hospitalization_id VARCHAR(50) PRIMARY KEY,
+                hospitalization_id INT AUTO_INCREMENT PRIMARY KEY,
                 patient_id VARCHAR(50),
                 admission_date DATETIME,
                 discharge_date DATETIME,
