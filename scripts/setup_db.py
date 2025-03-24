@@ -96,8 +96,8 @@ def create_tables(conn):
                 medication_name VARCHAR(255),
                 dosage VARCHAR(50),
                 frequency VARCHAR(50),
-                start_date DATE,
-                end_date DATE,
+                start_date DATETIME NULL,
+                end_date DATETIME NULL,
                 instructions TEXT,
                 FOREIGN KEY (patient_id) REFERENCES patient_demographics(patient_id) ON DELETE CASCADE
             );
