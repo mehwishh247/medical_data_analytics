@@ -91,8 +91,8 @@ def parse_patient_data(root):
             email = telecom_value if telecom_value.lower() not in ["none", "null"] else "None"
     
     # Languages (Unique list)
-    language = [lang.get("code", "N/A") for lang in root.findall(".//ns0:patient/ns0:languageCommunication/ns0:languageCode", ns)]
-    language = ", ".join(language) if language else "N/A"
+    language_codes = root.xpath(".//ns0:languageCommunication/ns0:languageCode/@code", namespaces=ns)
+    language = ", ".join(sorted(set(code.lower() for code in language_codes))) if language_codes else "N/A"
 
     return {
         "patient_id": patient_id,
@@ -490,7 +490,7 @@ def process_xml_files():
                 insert_diagnoses(diagnoses, patient_data["patient_id"])
                 insert_medications(medications, patient_data["patient_id"])
 
-                # os.rename(xml_path, f"data/processed/{filename}")
+                os.rename(xml_path, f"data/processed/{filename}")
 
 if __name__ == "__main__":
     process_xml_files()
