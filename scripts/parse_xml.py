@@ -145,19 +145,10 @@ def parse_hospitalizations(root):
     # Process each entry in the section
     for entry in section[0].xpath(".//ns0:entry/ns0:encounter", namespaces=ns):
         hospitalization = {
-            "encounter_type": "Unknown",
-            "location": "Unknown",
             "admission_date": None,
             "discharge_date": None,
-            "diagnoses": [],
-            "providers": [],
-            "informants": []
+            "hospital_name": "Unknown"
         }
-
-        # Extract encounter type
-        code = entry.xpath(".//ns0:code/@displayName", namespaces=ns)
-        if code:
-            hospitalization["encounter_type"] = code[0].strip()
 
         # Extract effective time (admission/discharge dates)
         effective_time = entry.xpath(".//ns0:effectiveTime", namespaces=ns)
@@ -169,27 +160,19 @@ def parse_hospitalizations(root):
             if high:
                 hospitalization["discharge_date"] = parse_hospitalization_date(high[0])
 
-        # Extract diagnoses
-        for ref in entry.xpath(".//ns0:entryRelationship/ns0:act/ns0:entryRelationship/ns0:observation/ns0:value/@displayName", namespaces=ns):
-            hospitalization["diagnoses"].append(ref)
-        
-        # Extract Location
+        # Extract Hospital Name (Location)
         location = entry.xpath(".//ns0:participant/ns0:participantRole/ns0:playingEntity/ns0:name", namespaces=ns)
-        if location:
-          hospitalization["location"] = location[0].text.strip()
-
-        # Extract providers
-        providers = entry.xpath(".//ns0:performer/ns0:assignedEntity/ns0:representedOrganization/ns0:name", namespaces=ns)
-        for provider in providers:
-            hospitalization["providers"].append(provider.text.strip())
-            
-        #Extract Informants
-        informants = entry.xpath(".//ns0:informant/ns0:assignedEntity/ns0:representedOrganization/ns0:name", namespaces=ns)
-        for informant in informants:
-            hospitalization["informants"].append(informant.text.strip())
-            
+        if location and location[0].text:
+            hospitalization["hospital_name"] = location[0].text.strip()
+        else:
+            # Fallback to table data if XML structure is missing
+            table = section[0].xpath(".//ns0:text/ns0:table/ns0:tbody/ns0:tr", namespaces=ns)
+            for tr in table:
+                td = tr.xpath(".//ns0:td", namespaces=ns)
+                if len(td) > 1 and td[1].text:
+                    hospitalization["hospital_name"] = td[1].text.strip()
+                    break
         hospitalizations.append(hospitalization)
-
     return hospitalizations
 
 def parse_diagnoses(root):
@@ -444,7 +427,6 @@ def insert_medications(medications, patient_id):
             patient_id, 
             medication_name, 
             dosage, 
-            frequency, 
             start_date, 
             instructions
         )
@@ -487,11 +469,10 @@ def process_xml_files():
 
             patient_data = parse_patient_data(root)
             hospitalizations = parse_hospitalizations(root)
+
             diagnoses = parse_diagnoses(root)
             medications = parse_medications(root)
 
-            for meds in medications:
-                print(meds)
 
             if patient_data:
                 print('Updating the database...')
