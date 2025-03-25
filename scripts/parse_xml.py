@@ -354,7 +354,7 @@ def insert_hospitalizations(hospitalizations, patient_id):
             patient_id, 
             admission_date, 
             discharge_date, 
-            hospital_name, 
+            hospital_name 
         )
         VALUES (%s, %s, %s, %s)
     """
@@ -365,7 +365,7 @@ def insert_hospitalizations(hospitalizations, patient_id):
                     patient_id,
                     record.get('admission_date'),
                     record.get('discharge_date'),
-                    record.get('hospital_name'),
+                    record.get('hospital_name')
                 ))
             except Exception as inner_e:
                 print(f"Error inserting record: {record}. Error: {inner_e}")
@@ -452,6 +452,7 @@ def insert_medications(medications, patient_id):
         conn.rollback()
         raise RuntimeError(f"Database insertion failed: {str(e)}")
     
+    
     finally:
         cursor.close()
         conn.close()
@@ -475,14 +476,17 @@ def process_xml_files():
 
 
             if patient_data:
-                print('Updating the database...')
+                try:
+                    print('Updating the database...')
+                    insert_patient_data(patient_data)
+                    insert_hospitalizations(hospitalizations, patient_data["patient_id"])
+                    insert_diagnoses(diagnoses, patient_data["patient_id"])
+                    insert_medications(medications, patient_data["patient_id"])
 
-                insert_patient_data(patient_data)
-                insert_hospitalizations(hospitalizations, patient_data["patient_id"])
-                insert_diagnoses(diagnoses, patient_data["patient_id"])
-                insert_medications(medications, patient_data["patient_id"])
+                except Exception as e:
+                    os.rename(xml_path, os.path.join('data', 'failed', filename))
 
-                os.rename(xml_path, f"data/processed/{filename}")
+                os.rename(xml_path, os.path.join('data', 'processed', filename))
 
 if __name__ == "__main__":
     process_xml_files()
