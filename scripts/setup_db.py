@@ -64,7 +64,7 @@ def create_tables(conn):
                 home_phone VARCHAR(20),
                 mobile_phone VARCHAR(20),
                 email VARCHAR(100),
-                language VARCHAR(100)
+                language TEXT
             );
         """,
         "patient_hospitalizations": """
