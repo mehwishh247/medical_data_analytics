@@ -270,6 +270,24 @@ def parse_ccda_date(ccda_date):
     except ValueError:
         return None
 
+def extract_dosage(medication_name):
+    """Extracts dosage from medication name using regex."""
+    if not medication_name or not isinstance(medication_name, str):
+        return None, None  # Return None for both if name is invalid
+
+    # Regex to find dosage (number + units like mg, mcg, etc.)
+    dosage_match = re.search(r"(\d*\.?\d+(?:\s*[A-Za-z]+)(?:/\s*[A-Za-z]+)?)", medication_name)
+
+    if dosage_match:
+        dosage = dosage_match.group(1)
+        cleaned_name = medication_name.replace(dosage, "").strip()
+        cleaned_name = " ".join(cleaned_name.split())
+        dosage = re.sub(r"(\d*\.?\d+)([A-Za-z]+)", r"\1 \2", dosage)
+
+        return dosage, cleaned_name
+    else:
+        return None, medication_name
+
 def parse_medications(root):
     """Parses patient medications details from XML."""
     ns = {'ns0': 'urn:hl7-org:v3'}
@@ -285,23 +303,20 @@ def parse_medications(root):
         if substance_adm is not None:
             medication = {}
 
-            # Extract Medication Name
+            # Extract Medication Name and dosages
             name_elem = substance_adm.find(".//ns0:manufacturedMaterial/ns0:code", namespaces=ns)
-            medication["medication_name"] = name_elem.get("displayName") if name_elem is not None else "Unknown"
+            medication_name = medication["medication_name"] = name_elem.get("displayName") if name_elem is not None else "Unknown"
 
-            # Extract Dosage
-            dose_elem = substance_adm.find(".//ns0:doseQuantity", namespaces=ns)
-            medication["dosage"] = f"{dose_elem.get('value')} {dose_elem.get('unit')}" if dose_elem is not None else "Unknown"
+            if medication_name is None:
+                continue
 
-            # Extract Frequency
-            freq_elem = substance_adm.find(".//ns0:rateQuantity", namespaces=ns)
-            medication["frequency"] = f"{freq_elem.get('value')} {freq_elem.get('unit')}" if freq_elem is not None else "Unknown"
+            dosage, cleaned_name = extract_dosage(medication_name)
+            medication["medication_name"] = cleaned_name.title() or "Unknown"  # Use cleaned name if available, else Unknown
+            medication["dosage"] = dosage
 
-            # Extract Duration (Start & End Date)
+            # Extract Duration (Start)
             start_elem = substance_adm.find(".//ns0:effectiveTime/ns0:low", namespaces=ns)
-            end_elem = substance_adm.find(".//ns0:effectiveTime/ns0:high", namespaces=ns)
             medication["start_date"] = parse_ccda_date(start_elem.get("value")) if start_elem is not None else None
-            medication["end_date"] = parse_ccda_date(end_elem.get("value")) if end_elem is not None else None
 
             # Extract Instructions from <entryRelationship typeCode="SUBJ" inversionInd="true">
             instruction_elem = entry.find(".//ns0:entryRelationship/ns0:act/ns0:text", namespaces=ns)
@@ -357,9 +372,8 @@ def insert_hospitalizations(hospitalizations, patient_id):
             admission_date, 
             discharge_date, 
             hospital_name, 
-            service_details
         )
-        VALUES (%s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s)
     """
     try:
         for record in hospitalizations:
@@ -369,7 +383,6 @@ def insert_hospitalizations(hospitalizations, patient_id):
                     record.get('admission_date'),
                     record.get('discharge_date'),
                     record.get('hospital_name'),
-                    record.get('service_details')
                 ))
             except Exception as inner_e:
                 print(f"Error inserting record: {record}. Error: {inner_e}")
@@ -433,16 +446,13 @@ def insert_medications(medications, patient_id):
             dosage, 
             frequency, 
             start_date, 
-            end_date, 
             instructions
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE 
             medication_name=VALUES(medication_name),
             dosage=VALUES(dosage), 
-            frequency=VALUES(frequency), 
             start_date=VALUES(start_date), 
-            end_date=VALUES(end_date),
             instructions=VALUES(instructions);"""
     try:
         for record in medications:
@@ -451,9 +461,7 @@ def insert_medications(medications, patient_id):
                 patient_id,
                 record['medication_name'],
                 record['dosage'],
-                record['frequency'],
                 record['start_date'],
-                record['end_date'],
                 record['instructions']
             ))
         conn.commit()
@@ -481,6 +489,9 @@ def process_xml_files():
             hospitalizations = parse_hospitalizations(root)
             diagnoses = parse_diagnoses(root)
             medications = parse_medications(root)
+
+            for meds in medications:
+                print(meds)
 
             if patient_data:
                 print('Updating the database...')

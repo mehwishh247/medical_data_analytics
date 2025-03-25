@@ -74,7 +74,6 @@ def create_tables(conn):
                 admission_date DATETIME,
                 discharge_date DATETIME,
                 hospital_name VARCHAR(255),
-                service_details TEXT,
                 FOREIGN KEY (patient_id) REFERENCES patient_demographics(patient_id) ON DELETE CASCADE
             );
         """,
@@ -95,9 +94,7 @@ def create_tables(conn):
                 patient_id VARCHAR(50),
                 medication_name VARCHAR(255),
                 dosage VARCHAR(50),
-                frequency VARCHAR(50),
                 start_date DATETIME NULL,
-                end_date DATETIME NULL,
                 instructions TEXT,
                 FOREIGN KEY (patient_id) REFERENCES patient_demographics(patient_id) ON DELETE CASCADE
             );
